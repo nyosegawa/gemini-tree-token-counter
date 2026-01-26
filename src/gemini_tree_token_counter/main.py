@@ -273,6 +273,24 @@ class GitContext:
                 stderr=subprocess.PIPE
             )
 
+    def _detect_default_branch(self):
+        """
+        Attempts to find the default branch (e.g., main, master, develop)
+        by querying the remote's HEAD reference.
+        """
+        try:
+            # symbolic-ref returns something like "refs/remotes/origin/main"
+            ref = self._run_git(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                capture_output=True
+            )
+            if ref:
+                return ref.strip().split('/')[-1]
+
+        except subprocess.CalledProcessError:
+            pass
+        return None
+
     def __enter__(self):
         print(f"Cloning {self.base_url} to temporary directory...")
         try:
@@ -283,6 +301,13 @@ class GitContext:
             if ref_to_checkout:
                 print(f"Switching to branch/ref: {ref_to_checkout}")
                 self._run_git(["git", "checkout", ref_to_checkout])
+            else:
+                default_branch = self._detect_default_branch()
+                if default_branch:
+                    print(f"Detected default branch: {default_branch}")
+                    self._run_git(["git", "checkout", default_branch])
+                else:
+                    pass
 
             final_commit = None
 
@@ -424,7 +449,7 @@ Examples:
     parser.add_argument("target", nargs="?", default=".", help="Local path or GitHub URL")
     parser.add_argument("-d", "--dir", action="append", help="Specific subdirectory to analyze", default=[])
     parser.add_argument("-c", "--content", action="store_true", help="Display file contents")
-    parser.add_argument("-b", "--branch", help="Git branch to checkout (default: main/master)")
+    parser.add_argument("-b", "--branch", help="Git branch to checkout (default: auto-detected from remote)")
     parser.add_argument("--commit", help="Git commit hash to checkout (defaults to latest)")
     parser.add_argument("--date", help="Checkout the latest commit before this date (format: YYYY-MM-DD)")
     parser.add_argument("--first", action="store_true", help="Checkout the first (initial) commit of the repo")
