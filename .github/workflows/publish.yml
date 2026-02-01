@@ -27,7 +27,7 @@ jobs:
           version: "latest"
 
       - name: Run tests
-        run: uv run pytest
+        run: uv run --with pytest pytest
 
       - name: Build package
         run: uv build
