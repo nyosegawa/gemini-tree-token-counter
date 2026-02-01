@@ -61,7 +61,7 @@ def get_token_count(text: str) -> int:
     return sum(1 for _ in COMBINED_PATTERN.finditer(text))
 
 # -----------------------------------------------------------------------------
-# 2. File System Traversal with .gitignore support
+# 2. File System Traversal with .gitignore/.gtcignore support
 # -----------------------------------------------------------------------------
 
 ALWAYS_IGNORE_DIRS = {
@@ -95,28 +95,76 @@ class Node:
         self.children.append(node)
         self.children.sort(key=lambda x: (not x.is_dir, x.name.lower()))
 
-def load_gitignore_patterns(path):
+def parse_ignore_pattern(raw_pattern, allow_comments=True, path_based="auto"):
+    pattern = raw_pattern.strip()
+    if not pattern:
+        return None
+    if allow_comments and pattern.startswith('#'):
+        return None
+
+    dir_only = pattern.endswith('/')
+    if dir_only:
+        pattern = pattern[:-1].strip()
+    if not pattern:
+        return None
+
+    if pattern.startswith('./'):
+        pattern = pattern[2:]
+    if pattern.startswith('/'):
+        pattern = pattern[1:]
+    if os.sep != '/':
+        pattern = pattern.replace(os.sep, '/')
+
+    if path_based == "auto":
+        path_based = '/' in pattern
+    else:
+        path_based = bool(path_based)
+
+    return (pattern, dir_only, path_based)
+
+def load_ignore_patterns(path, filename, path_based):
     """
-    Load patterns from a .gitignore file in the given directory.
+    Load ignore patterns from the specified file in a directory.
     Simple implementation: treats lines as glob patterns.
     """
-    gitignore_path = os.path.join(path, '.gitignore')
+    ignore_path = os.path.join(path, filename)
     patterns = []
-    if os.path.exists(gitignore_path):
+    if os.path.exists(ignore_path):
         try:
-            with open(gitignore_path, 'r', encoding='utf-8') as f:
+            with open(ignore_path, 'r', encoding='utf-8') as f:
                 for line in f:
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    if line.endswith('/'):
-                        line = line[:-1]
-                    patterns.append(line)
+                    parsed = parse_ignore_pattern(line, allow_comments=True, path_based=path_based)
+                    if parsed:
+                        patterns.append(parsed)
         except Exception:
             pass
     return patterns
 
-def is_ignored(name, is_dir, active_patterns):
+def load_cli_patterns(patterns):
+    parsed_patterns = []
+    for pattern in patterns or []:
+        parsed = parse_ignore_pattern(pattern, allow_comments=False, path_based="auto")
+        if parsed:
+            parsed_patterns.append(parsed)
+    return parsed_patterns
+
+def normalize_rel_path(path, root_path):
+    try:
+        rel_path = os.path.relpath(path, root_path)
+    except ValueError:
+        rel_path = path
+    return rel_path.replace(os.sep, '/')
+
+def matches_patterns(name, rel_path, is_dir, patterns):
+    for pattern, dir_only, path_based in patterns:
+        if dir_only and not is_dir:
+            continue
+        target = rel_path if path_based else name
+        if fnmatch.fnmatch(target, pattern):
+            return True
+    return False
+
+def is_ignored(name, rel_path, is_dir, active_patterns, gtc_patterns, cli_patterns):
     """
     Check if a file/dir name matches any of the ignore criteria.
     """
@@ -128,18 +176,30 @@ def is_ignored(name, is_dir, active_patterns):
 
     # 2. Pattern Matching (Extensions & .gitignore)
     # fnmatch is not fully gitignore compliant but covers most cases
-    for pattern in active_patterns:
-        if fnmatch.fnmatch(name, pattern):
-            return True
+    if matches_patterns(name, rel_path, is_dir, active_patterns):
+        return True
+    if matches_patterns(name, rel_path, is_dir, gtc_patterns):
+        return True
+    if matches_patterns(name, rel_path, is_dir, cli_patterns):
+        return True
     return False
 
-def scan_directory(path, parent_patterns=None):
+def scan_directory(path, root_path, parent_patterns=None, gtc_patterns=None, cli_patterns=None):
     if parent_patterns is None:
-        parent_patterns = DEFAULT_IGNORE_PATTERNS.copy()
+        parent_patterns = []
+        for pattern in DEFAULT_IGNORE_PATTERNS:
+            parsed = parse_ignore_pattern(pattern, allow_comments=False, path_based=False)
+            if parsed:
+                parent_patterns.append(parsed)
+
+    if gtc_patterns is None:
+        gtc_patterns = []
+    if cli_patterns is None:
+        cli_patterns = []
 
     # Load .gitignore in current directory and add to patterns
     current_patterns = parent_patterns.copy()
-    current_patterns.extend(load_gitignore_patterns(path))
+    current_patterns.extend(load_ignore_patterns(path, '.gitignore', path_based=False))
 
     name = os.path.basename(path) or path
     node = Node(name, path, is_dir=True)
@@ -158,12 +218,14 @@ def scan_directory(path, parent_patterns=None):
         is_entry_dir = os.path.isdir(full_path)
 
         # Check ignore rules
-        if is_ignored(entry, is_entry_dir, current_patterns):
+        rel_path = normalize_rel_path(full_path, root_path)
+
+        if is_ignored(entry, rel_path, is_entry_dir, current_patterns, gtc_patterns, cli_patterns):
             continue
 
         if is_entry_dir:
             # Recurse with current patterns
-            child_node = scan_directory(full_path, current_patterns)
+            child_node = scan_directory(full_path, root_path, current_patterns, gtc_patterns, cli_patterns)
             node.add_child(child_node)
             node.tokens += child_node.tokens
         elif os.path.isfile(full_path):
@@ -375,6 +437,8 @@ class GitContext:
 
 def run_analysis(root_path, source_name, args):
     root_abs = os.path.abspath(root_path)
+    gtc_patterns = load_ignore_patterns(root_abs, '.gtcignore', path_based="auto")
+    cli_patterns = load_cli_patterns(args.exclude)
 
     if args.dir:
         target_subdirs = args.dir
@@ -401,7 +465,7 @@ def run_analysis(root_path, source_name, args):
             continue
 
         # Start scanning with default patterns
-        node = scan_directory(scan_path_abs)
+        node = scan_directory(scan_path_abs, root_abs, None, gtc_patterns, cli_patterns)
         scanned_nodes.append(node)
         grand_total_tokens += node.tokens
 
@@ -429,6 +493,7 @@ Examples:
   # 1. Local Directory
   gtc                       # Scan current directory
   gtc . -d src -d lib -c    # Scan specific dirs with content
+  gtc . -e "*.test.ts" -e "__snapshots__"  # Exclude patterns (CLI)
 
   # 2. GitHub Repository
   gtc https://github.com/user/repo
@@ -449,6 +514,7 @@ Examples:
     parser.add_argument("target", nargs="?", default=".", help="Local path or GitHub URL")
     parser.add_argument("-d", "--dir", action="append", help="Specific subdirectory to analyze", default=[])
     parser.add_argument("-c", "--content", action="store_true", help="Display file contents")
+    parser.add_argument("-e", "--exclude", action="append", help="Exclude patterns (glob). Can be used multiple times.", default=[])
     parser.add_argument("-b", "--branch", help="Git branch to checkout (default: auto-detected from remote)")
     parser.add_argument("--commit", help="Git commit hash to checkout (defaults to latest)")
     parser.add_argument("--date", help="Checkout the latest commit before this date (format: YYYY-MM-DD)")

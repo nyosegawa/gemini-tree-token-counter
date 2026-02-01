@@ -14,6 +14,7 @@ It visualizes the file tree with token counts and supports "Time Travel" (analyz
 - 🐙 **GitHub Support**: Analyze remote repositories directly.
 - ⏳ **Time Travel**: Check token counts for a specific branch, commit hash, or date (e.g., "how many tokens was this repo in 2023?").
 - 📄 **Content Inspection**: Optionally output file contents for context generation.
+- 🧹 **Exclude Patterns**: Ignore files via `.gtcignore` or `--exclude`.
 
 ## Installation
 
@@ -40,10 +41,32 @@ gtc
 - `target`: Local path or GitHub URL (default: current directory).
 - `-d`, `--dir`: Target specific subdirectories (can be used multiple times).
 - `-c`, `--content`: Display file contents (useful for piping to LLMs).
+- `-e`, `--exclude`: Exclude patterns (glob). Can be used multiple times.
 - `-b`, `--branch`: Checkout a specific Git branch.
 - `--commit`: Checkout a specific Git commit hash.
 - `--date`: Checkout the latest commit before a specific date (format: YYYY-MM-DD).
 - `--first`: Checkout the first (initial) commit of the repo.
+
+### Exclude Patterns
+
+You can exclude files/folders that are tracked by Git but unnecessary for token counting.
+
+1. **CLI (`--exclude`)**
+   ```bash
+   gtc . --exclude "*.test.ts" --exclude "__snapshots__" --exclude "telemetry"
+   ```
+
+2. **`.gtcignore` (project root)**
+   ```gitignore
+   # Tests and snapshots
+   *.test.ts
+   __snapshots__/
+   __mocks__/
+
+   # Heavy directories
+   telemetry/
+   packages/core/src/mcp/
+   ```
 
 ### Examples
 
@@ -52,6 +75,7 @@ gtc
 gtc                       # Scan current directory
 gtc . -d src -d lib       # Scan specific dirs
 gtc . -c > context.txt    # Dump all code and tokens to a file
+gtc . -e "*.test.ts" -e "__snapshots__"  # Exclude patterns
 
 # 2. GitHub Repository
 gtc https://github.com/user/repo
